@@ -1,0 +1,82 @@
+---
+- name: Install MySQL server and client
+  ansible.builtin.apt:
+    name:
+      - "mysql-server-{{ mysql_version }}"
+      - "mysql-client-{{ mysql_version }}"
+      - python3-mysqldb
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configure MySQL bind-address
+  ansible.builtin.lineinfile:
+    path: /etc/mysql/mysql.conf.d/mysqld.cnf
+    regexp: '^bind-address'
+    line: "bind-address = {{ mysql_bind_address }}"
+  notify: Restart MySQL
+
+- name: Apply MySQL server tuning
+  ansible.builtin.template:
+    src: mysql-tuning.cnf.j2
+    dest: /etc/mysql/mysql.conf.d/tuning.cnf
+    owner: root
+    group: root
+    mode: "0644"
+  when: mysql_server_config is defined and mysql_server_config | length > 0
+  notify: Restart MySQL
+
+- name: Enable and start MySQL
+  ansible.builtin.systemd:
+    name: mysql
+    enabled: true
+    state: started
+
+- name: Set MySQL root password
+  community.mysql.mysql_user:
+    name: root
+    password: "{{ mysql_root_password }}"
+    host: localhost
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    state: present
+
+- name: Create .my.cnf for root (passwordless local access)
+  ansible.builtin.template:
+    src: my.cnf.j2
+    dest: /root/.my.cnf
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Remove anonymous MySQL users
+  community.mysql.mysql_user:
+    name: ""
+    host_all: true
+    state: absent
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Remove test database
+  community.mysql.mysql_db:
+    name: test
+    state: absent
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Create databases
+  community.mysql.mysql_db:
+    name: "{{ item.name }}"
+    encoding: "{{ item.encoding | default('utf8mb4') }}"
+    collation: "{{ item.collation | default('utf8mb4_unicode_ci') }}"
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+  loop: "{{ mysql_databases }}"
+
+- name: Create users and grant privileges
+  community.mysql.mysql_user:
+    name: "{{ item.name }}"
+    password: "{{ item.password }}"
+    host: "{{ item.host | default('%') }}"
+    priv: "{{ item.priv }}"
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+  loop: "{{ mysql_users }}"
+  no_log: true

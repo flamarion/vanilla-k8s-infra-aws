@@ -1,0 +1,30 @@
+---
+- name: Check if node already joined the cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Join cluster as control plane node
+  ansible.builtin.command: >
+    {{ hostvars[groups['controllers'][0]].k8s_join_command }}
+    --control-plane
+    --certificate-key {{ hostvars[groups['controllers'][0]].k8s_certificate_key }}
+  when: not kubelet_conf.stat.exists
+  register: join_result
+
+- name: Create .kube directory for ubuntu user
+  ansible.builtin.file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0755"
+
+- name: Copy admin.conf to ubuntu user
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: true
+    owner: ubuntu
+    group: ubuntu
+    mode: "0600"

@@ -1,0 +1,93 @@
+---
+- name: Check if cluster is already initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_already_init
+
+- name: Detect installed kubeadm version
+  ansible.builtin.command: kubeadm version -o short
+  register: kubeadm_version_output
+  changed_when: false
+
+- name: Set full Kubernetes version fact
+  ansible.builtin.set_fact:
+    k8s_full_version: "{{ kubeadm_version_output.stdout | trim }}"
+
+- name: Generate kubeadm config
+  ansible.builtin.template:
+    src: kubeadm-config.yml.j2
+    dest: /tmp/kubeadm-config.yml
+    mode: "0600"
+  when: not kubeadm_already_init.stat.exists
+
+- name: Initialize Kubernetes cluster
+  ansible.builtin.command: >
+    kubeadm init
+    --config /tmp/kubeadm-config.yml
+    --upload-certs
+  register: kubeadm_init
+  when: not kubeadm_already_init.stat.exists
+
+- name: Create .kube directory for ubuntu user
+  ansible.builtin.file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0755"
+
+- name: Create local kubeconfig pointing at localhost
+  ansible.builtin.shell: |
+    sed 's|server: https://.*:6443|server: https://127.0.0.1:6443|' \
+      /etc/kubernetes/admin.conf > /home/ubuntu/.kube/config
+    chown ubuntu:ubuntu /home/ubuntu/.kube/config
+    chmod 0600 /home/ubuntu/.kube/config
+  when: not kubeadm_already_init.stat.exists
+
+- name: Wait for local API server to be ready
+  ansible.builtin.command: >
+    kubectl --kubeconfig /home/ubuntu/.kube/config get --raw /healthz
+  become: false
+  register: api_check
+  retries: 30
+  delay: 5
+  until: api_check.rc == 0
+  changed_when: false
+  when: not kubeadm_already_init.stat.exists
+
+- name: Generate join token
+  ansible.builtin.command: >
+    kubeadm token create --print-join-command
+    --kubeconfig /etc/kubernetes/super-admin.conf
+  register: join_command_output
+  changed_when: false
+
+- name: Generate certificate key
+  ansible.builtin.command: kubeadm certs certificate-key
+  register: cert_key_output
+  changed_when: false
+
+- name: Upload certs to cluster
+  ansible.builtin.command: >
+    kubeadm init phase upload-certs
+    --upload-certs
+    --certificate-key {{ cert_key_output.stdout | trim }}
+    --kubeconfig /etc/kubernetes/super-admin.conf
+  changed_when: false
+
+- name: Set join command facts for other hosts
+  ansible.builtin.set_fact:
+    k8s_join_command: "{{ join_command_output.stdout }}"
+    k8s_certificate_key: "{{ cert_key_output.stdout | trim }}"
+    cacheable: true
+
+- name: Fetch NLB-endpoint kubeconfig to local machine
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ playbook_dir }}/../kubeconfig"
+    flat: true
+
+- name: Clean up kubeadm config
+  ansible.builtin.file:
+    path: /tmp/kubeadm-config.yml
+    state: absent

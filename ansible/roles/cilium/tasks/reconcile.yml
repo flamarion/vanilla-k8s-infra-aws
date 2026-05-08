@@ -1,0 +1,43 @@
+---
+# Restart cilium-operator once the full HA control plane is up.
+#
+# Why: the operator is installed on controllers[0] before controllers[1:] and
+# workers join (see site.yml). On startup it probes Gateway API CRDs via the
+# NLB endpoint (k8scontroller.<domain>:6443), which at that moment load-balances
+# to controllers that have not joined yet -> "connection refused". That
+# one-shot probe failure permanently disables the Gateway/Ingress reconciler
+# in the running operator pod, so no CiliumEnvoyConfig is ever generated from
+# Ingress resources and NodePort 30080/30443 has no backends (NLB health
+# checks fail; ingress traffic is black-holed).
+#
+# The operator is stateless; a restart re-runs the probe against the now-HA
+# control plane and registers the Ingress/Gateway reconcilers correctly.
+
+- name: Create local super-admin kubeconfig
+  ansible.builtin.shell: |
+    sed 's|server: https://.*:6443|server: https://127.0.0.1:6443|' \
+      /etc/kubernetes/super-admin.conf > /tmp/super-admin-local.conf
+    chown ubuntu:ubuntu /tmp/super-admin-local.conf
+    chmod 0600 /tmp/super-admin-local.conf
+  changed_when: false
+
+- name: Restart cilium-operator so Ingress/Gateway reconciler picks up HA control plane
+  ansible.builtin.command: >
+    kubectl -n kube-system rollout restart deployment/cilium-operator
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Wait for cilium-operator rollout to finish
+  ansible.builtin.command: >
+    kubectl -n kube-system rollout status deployment/cilium-operator --timeout=180s
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Clean up temp kubeconfig
+  ansible.builtin.file:
+    path: /tmp/super-admin-local.conf
+    state: absent

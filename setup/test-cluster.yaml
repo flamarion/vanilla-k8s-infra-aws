@@ -1,0 +1,140 @@
+---
+# =============================================================================
+# Cluster Validation Suite
+# Tests: Ingress (SSL + redirect), Storage (EBS gp3), DNS, Scheduling
+#
+# Apply:  kubectl apply -f setup/test-cluster.yaml
+# Verify: curl -I https://app.example.com   (replace with your domain)
+# Clean:  kubectl delete -f setup/test-cluster.yaml
+#
+# IMPORTANT: replace `app.example.com` below with a subdomain that exists in
+# your Route53 hosted zone (one of `application_subdomains` from terraform.tfvars).
+# =============================================================================
+
+# --- Namespace ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cluster-validation
+
+# --- Storage Test: PVC backed by gp3 EBS ---
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-storage-test
+  namespace: cluster-validation
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 4Gi
+
+# --- Storage Test: Pod writing to the PVC ---
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-writer
+  namespace: cluster-validation
+  labels:
+    app: storage-writer
+    test: storage
+spec:
+  containers:
+    - name: writer
+      image: busybox:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "EBS gp3 volume is working - written at $(date)" > /data/proof.txt
+          cat /data/proof.txt
+          sleep 3600
+      volumeMounts:
+        - mountPath: /data
+          name: ebs-vol
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+  volumes:
+    - name: ebs-vol
+      persistentVolumeClaim:
+        claimName: ebs-storage-test
+
+# --- Web App: Deployment ---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-k8s
+  namespace: cluster-validation
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-k8s
+  template:
+    metadata:
+      labels:
+        app: hello-k8s
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+# --- Web App: Service ---
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-k8s
+  namespace: cluster-validation
+spec:
+  selector:
+    app: hello-k8s
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP
+
+# --- Web App: Ingress with SSL + HTTPS redirect ---
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-k8s
+  namespace: cluster-validation
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    ingress.cilium.io/force-https: "true"
+    ingress.cilium.io/x-forwarded-for: "true"
+spec:
+  ingressClassName: cilium
+  tls:
+    - hosts:
+        - app.example.com
+      secretName: hello-k8s-tls
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hello-k8s
+                port:
+                  number: 80

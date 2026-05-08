@@ -1,0 +1,129 @@
+---
+- name: Create local super-admin kubeconfig
+  ansible.builtin.shell: |
+    sed 's|server: https://.*:6443|server: https://127.0.0.1:6443|' \
+      /etc/kubernetes/super-admin.conf > /tmp/super-admin-local.conf
+    chown ubuntu:ubuntu /tmp/super-admin-local.conf
+    chmod 0600 /tmp/super-admin-local.conf
+  changed_when: false
+
+- name: Get AWS metadata token
+  ansible.builtin.uri:
+    url: http://169.254.169.254/latest/api/token
+    method: PUT
+    headers:
+      X-aws-ec2-metadata-token-ttl-seconds: "21600"
+    return_content: true
+  register: imds_token
+
+- name: Get AWS region from IMDS
+  ansible.builtin.uri:
+    url: http://169.254.169.254/latest/meta-data/placement/region
+    headers:
+      X-aws-ec2-metadata-token: "{{ imds_token.content }}"
+    return_content: true
+  register: aws_region_resp
+
+- name: Set AWS region fact
+  ansible.builtin.set_fact:
+    aws_region: "{{ aws_region_resp.content }}"
+
+- name: Patch providerID and topology labels on all K8s nodes
+  ansible.builtin.shell: |
+    for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+      provider_id=$(kubectl get node $node -o jsonpath='{.spec.providerID}' 2>/dev/null)
+      has_type=$(kubectl get node $node -o jsonpath='{.metadata.labels.node\.kubernetes\.io/instance-type}' 2>/dev/null)
+      if [ -z "$provider_id" ] || [ -z "$has_type" ]; then
+        ip=$(kubectl get node $node -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+        info=$(ssh -o StrictHostKeyChecking=no ubuntu@$ip '
+          T=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+          IID=$(curl -s -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/instance-id)
+          AZ=$(curl -s -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+          ITYPE=$(curl -s -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/instance-type)
+          REGION=$(curl -s -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/placement/region)
+          echo "$IID $AZ $ITYPE $REGION"
+        ' 2>/dev/null)
+        IID=$(echo $info | awk '{print $1}')
+        AZ=$(echo $info | awk '{print $2}')
+        ITYPE=$(echo $info | awk '{print $3}')
+        REGION=$(echo $info | awk '{print $4}')
+        if [ -n "$IID" ]; then
+          kubectl patch node $node -p "{\"spec\":{\"providerID\":\"aws:///${AZ}/${IID}\"}}" --type=merge 2>/dev/null
+          kubectl label node $node \
+            node.kubernetes.io/instance-type=$ITYPE \
+            topology.kubernetes.io/zone=$AZ \
+            topology.kubernetes.io/region=$REGION \
+            --overwrite 2>/dev/null
+          echo "Patched $node: aws:///${AZ}/${IID} type=$ITYPE"
+        fi
+      else
+        echo "$node already configured"
+      fi
+    done
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Add AWS EBS CSI Helm repository
+  kubernetes.core.helm_repository:
+    name: aws-ebs-csi-driver
+    repo_url: https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+
+- name: Install AWS EBS CSI driver
+  kubernetes.core.helm:
+    name: aws-ebs-csi-driver
+    chart_ref: aws-ebs-csi-driver/aws-ebs-csi-driver
+    chart_version: "{{ ebs_csi_chart_version }}"
+    release_namespace: kube-system
+    create_namespace: false
+    values:
+      controller:
+        serviceAccount:
+          create: true
+          name: ebs-csi-controller-sa
+        region: "{{ aws_region }}"
+        env:
+          - name: AWS_REGION
+            value: "{{ aws_region }}"
+      node:
+        serviceAccount:
+          create: true
+          name: ebs-csi-node-sa
+        env:
+          - name: AWS_REGION
+            value: "{{ aws_region }}"
+    wait: false
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+
+- name: Create gp3 StorageClass
+  ansible.builtin.shell: |
+    cat <<'EOF' | kubectl apply -f -
+    apiVersion: storage.k8s.io/v1
+    kind: StorageClass
+    metadata:
+      name: gp3
+      annotations:
+        storageclass.kubernetes.io/is-default-class: "true"
+    provisioner: ebs.csi.aws.com
+    parameters:
+      type: gp3
+      fsType: ext4
+      encrypted: "true"
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+    EOF
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Clean up temp kubeconfig
+  ansible.builtin.file:
+    path: /tmp/super-admin-local.conf
+    state: absent

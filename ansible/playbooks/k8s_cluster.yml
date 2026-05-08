@@ -1,0 +1,57 @@
+---
+# =============================================================================
+# k8s_cluster.yml - Kubernetes-only deployment (no MySQL)
+#
+# Usage: ansible-playbook playbooks/k8s_cluster.yml
+# =============================================================================
+
+- name: Common OS configuration
+  hosts: k8s
+  roles:
+    - common
+
+- name: Install containerd
+  hosts: k8s
+  roles:
+    - containerd
+
+- name: Install kubeadm, kubelet, kubectl
+  hosts: k8s
+  roles:
+    - k8s_prereqs
+
+- name: Initialize Kubernetes control plane
+  hosts: controllers[0]
+  roles:
+    - k8s_controller_init
+
+- name: Install Cilium CNI and ingress
+  hosts: controllers[0]
+  roles:
+    - cilium
+
+- name: Join additional control plane nodes
+  hosts: controllers[1:]
+  serial: 1
+  roles:
+    - k8s_controller_join
+
+- name: Join worker nodes
+  hosts: workers
+  roles:
+    - k8s_worker_join
+
+- name: Install AWS EBS CSI driver
+  hosts: controllers[0]
+  roles:
+    - ebs_csi
+
+- name: Install metrics-server
+  hosts: controllers[0]
+  roles:
+    - metrics_server
+
+- name: Install cert-manager
+  hosts: controllers[0]
+  roles:
+    - cert_manager

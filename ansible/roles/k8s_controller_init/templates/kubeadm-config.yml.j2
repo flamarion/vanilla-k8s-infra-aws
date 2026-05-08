@@ -1,0 +1,27 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: "{{ k8s_full_version }}"
+controlPlaneEndpoint: "{{ control_plane_endpoint }}"
+networking:
+  podSubnet: "{{ pod_network_cidr }}"
+  serviceSubnet: "{{ service_cidr }}"
+apiServer:
+  certSANs:
+    - "127.0.0.1"
+    - "localhost"
+    - "k8scontroller.{{ domain_name }}"
+    - "{{ control_plane_endpoint | regex_replace(':.*', '') }}"
+{% for host in groups['controllers'] %}
+    - "{{ hostvars[host].private_ip }}"
+    - "{{ host }}"
+{% endfor %}
+{% for host in groups['workers'] %}
+    - "{{ hostvars[host].private_ip }}"
+    - "{{ host }}"
+{% endfor %}
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+skipPhases:
+  - addon/kube-proxy

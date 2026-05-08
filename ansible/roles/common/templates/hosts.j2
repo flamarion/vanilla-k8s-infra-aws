@@ -1,0 +1,9 @@
+127.0.0.1 localhost
+127.0.1.1 {{ inventory_hostname }}
+
+# Cluster nodes (managed by Ansible)
+{% for host in groups['all'] %}
+{% if hostvars[host].private_ip is defined %}
+{{ hostvars[host].private_ip }} {{ host }}
+{% endif %}
+{% endfor %}

@@ -1,0 +1,160 @@
+---
+- name: Install Helm (if not present)
+  ansible.builtin.shell: |
+    curl -fsSL {{ helm_install_url }} | bash
+  args:
+    creates: /usr/local/bin/helm
+  become: true
+
+- name: Install Cilium CLI
+  ansible.builtin.shell: |
+    CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+    curl -L --fail --remote-name-all \
+      https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-amd64.tar.gz
+    tar xzf cilium-linux-amd64.tar.gz -C /usr/local/bin
+    rm -f cilium-linux-amd64.tar.gz
+  args:
+    creates: /usr/local/bin/cilium
+  become: true
+
+- name: Create local super-admin kubeconfig
+  ansible.builtin.shell: |
+    sed 's|server: https://.*:6443|server: https://127.0.0.1:6443|' \
+      /etc/kubernetes/super-admin.conf > /tmp/super-admin-local.conf
+    chown ubuntu:ubuntu /tmp/super-admin-local.conf
+    chmod 0600 /tmp/super-admin-local.conf
+  changed_when: false
+
+- name: Install Gateway API CRDs
+  ansible.builtin.command: >
+    kubectl apply -f
+    https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version }}/standard-install.yaml
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Check if Cilium is already installed
+  ansible.builtin.shell: |
+    helm list -n kube-system -q 2>/dev/null | grep -q '^cilium$' && echo "installed" || echo "missing"
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  register: cilium_check
+  changed_when: false
+
+- name: Force-delete stuck cilium-secrets namespace if terminating
+  ansible.builtin.shell: |
+    if kubectl get ns cilium-secrets 2>/dev/null | grep -q Terminating; then
+      kubectl get ns cilium-secrets -o json | \
+        jq '.spec.finalizers = []' | \
+        kubectl replace --raw "/api/v1/namespaces/cilium-secrets/finalize" -f -
+      echo "Force-deleted cilium-secrets namespace"
+    else
+      echo "No stuck namespace"
+    fi
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Install Cilium via CLI
+  ansible.builtin.shell: |
+    cilium install --version {{ cilium_version }} \
+      --set kubeProxyReplacement=true \
+      --set k8sServiceHost={{ control_plane_endpoint | regex_replace(':.*', '') }} \
+      --set k8sServicePort={{ k8s_api_port }} \
+      --set ipam.mode=kubernetes \
+      --set routingMode=tunnel \
+      --set tunnelProtocol=vxlan \
+      --set bpf.masquerade=true \
+      --set nodePort.enabled=true \
+      --set "devices={ens5}" \
+      --set gatewayAPI.enabled=true \
+      --set ingressController.enabled=true \
+      --set ingressController.loadbalancerMode=shared \
+      --set ingressController.default=true \
+      --set ingressController.service.type=NodePort \
+      --set ingressController.service.insecureNodePort=30080 \
+      --set ingressController.service.secureNodePort=30443 \
+      --set hubble.relay.enabled=true \
+      --set hubble.ui.enabled=true \
+      --set operator.replicas=1
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  when: cilium_check.stdout == "missing"
+
+- name: Wait for Cilium agent pod to be Ready
+  ansible.builtin.shell: |
+    kubectl get pods -n kube-system -l k8s-app=cilium \
+      -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  register: cilium_ready
+  retries: 60
+  delay: 10
+  until: cilium_ready.stdout == "True"
+  changed_when: false
+
+- name: Remove cloud-provider uninitialized taint
+  ansible.builtin.command: >
+    kubectl taint nodes {{ inventory_hostname }} node.cloudprovider.kubernetes.io/uninitialized- --overwrite
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Allow scheduling on first controller temporarily for CoreDNS
+  ansible.builtin.command: >
+    kubectl taint nodes {{ inventory_hostname }} node-role.kubernetes.io/control-plane:NoSchedule- --overwrite
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Restart CoreDNS deployment to reset progress deadline
+  ansible.builtin.command: >
+    kubectl -n kube-system rollout restart deployment/coredns
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Wait for CoreDNS to be ready
+  ansible.builtin.command: >
+    kubectl -n kube-system rollout status deployment/coredns --timeout=300s
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+
+- name: Re-apply control-plane taint
+  ansible.builtin.command: >
+    kubectl taint nodes {{ inventory_hostname }} node-role.kubernetes.io/control-plane:NoSchedule --overwrite
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  changed_when: false
+  failed_when: false
+  when: groups['workers'] | length > 0
+
+- name: Verify first controller is Ready
+  ansible.builtin.shell: |
+    kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+  register: node_ready
+  retries: 30
+  delay: 5
+  until: node_ready.stdout == "True"
+  changed_when: false
+
+- name: Clean up temp kubeconfig
+  ansible.builtin.file:
+    path: /tmp/super-admin-local.conf
+    state: absent

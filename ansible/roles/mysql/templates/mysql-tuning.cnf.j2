@@ -1,0 +1,5 @@
+# Managed by Ansible -- do not edit manually
+[mysqld]
+{% for key, value in mysql_server_config.items() %}
+{{ key }} = {{ value }}
+{% endfor %}

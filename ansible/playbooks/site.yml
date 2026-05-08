@@ -1,0 +1,87 @@
+---
+# =============================================================================
+# site.yml - Full infrastructure deployment
+# Bootstraps K8s cluster, installs CNI/CSI, and configures MySQL
+#
+# Usage: ansible-playbook playbooks/site.yml
+# =============================================================================
+
+# --- Stage 1: Base OS on ALL nodes ---
+- name: Common OS configuration
+  hosts: all:!bastion
+  roles:
+    - common
+
+# --- Stage 2: Container runtime on K8s nodes ---
+- name: Install containerd
+  hosts: k8s
+  roles:
+    - containerd
+
+# --- Stage 3: K8s prerequisites ---
+- name: Install kubeadm, kubelet, kubectl
+  hosts: k8s
+  roles:
+    - k8s_prereqs
+
+# --- Stage 4: Initialize first controller ---
+- name: Initialize Kubernetes control plane
+  hosts: controllers[0]
+  roles:
+    - k8s_controller_init
+
+# --- Stage 5: Install Cilium IMMEDIATELY (before any joins) ---
+- name: Install Cilium CNI and ingress
+  hosts: controllers[0]
+  roles:
+    - cilium
+
+# --- Stage 6: Join remaining controllers (CNI is ready) ---
+- name: Join additional control plane nodes
+  hosts: controllers[1:]
+  serial: 1
+  roles:
+    - k8s_controller_join
+
+# --- Stage 7: Join workers ---
+- name: Join worker nodes
+  hosts: workers
+  roles:
+    - k8s_worker_join
+
+# --- Stage 7.5: Reconcile Cilium operator now that HA control plane is up ---
+# Cilium was installed in stage 5 before controllers[1:] and workers joined.
+# Its operator probes Gateway API CRDs via the NLB at startup; those probes
+# fail while the NLB still points at not-yet-joined controllers, which
+# permanently disables the Ingress/Gateway reconciler. Restarting it here
+# re-runs the probe against the complete HA control plane.
+- name: Reconcile Cilium operator against full control plane
+  hosts: controllers[0]
+  tasks:
+    - ansible.builtin.include_role:
+        name: cilium
+        tasks_from: reconcile.yml
+
+# --- Stage 8: Install EBS CSI driver (all nodes exist) ---
+- name: Install AWS EBS CSI driver
+  hosts: controllers[0]
+  roles:
+    - ebs_csi
+
+# --- Stage 9: Install metrics-server (HPA support) ---
+- name: Install metrics-server
+  hosts: controllers[0]
+  roles:
+    - metrics_server
+
+# --- Stage 10: Install cert-manager (SSL certificates) ---
+- name: Install cert-manager
+  hosts: controllers[0]
+  roles:
+    - cert_manager
+
+# --- Stage 11: MySQL ---
+- name: Configure MySQL database
+  hosts: databases
+  roles:
+    - mysql

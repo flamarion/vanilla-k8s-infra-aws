@@ -1,0 +1,106 @@
+# =============================================================================
+# Copy this file to terraform.tfvars and edit with your values:
+#   cp terraform.tfvars.example terraform.tfvars
+# =============================================================================
+
+# AWS
+aws_region  = "eu-central-1"
+aws_profile = "your-aws-profile"     # set to null if using env vars or IAM role
+
+# Namespace -- prefixes every AWS resource name
+namespace = "k8s-lab"
+
+# Instances -- each key becomes a hostname
+# Roles: bastion, controller, worker, db
+# Controllers must be m5.xlarge or larger (etcd + API server need 4+ vCPU)
+instances = {
+  bastion = {
+    role          = "bastion"
+    instance_type = "t3.micro"
+    volume_size   = 20
+    subnet_type   = "public"
+  }
+
+  controller-1 = {
+    role          = "controller"
+    instance_type = "m5.xlarge"
+    volume_size   = 100
+    subnet_type   = "private"
+  }
+  controller-2 = {
+    role          = "controller"
+    instance_type = "m5.xlarge"
+    volume_size   = 100
+    subnet_type   = "private"
+  }
+  controller-3 = {
+    role          = "controller"
+    instance_type = "m5.xlarge"
+    volume_size   = 100
+    subnet_type   = "private"
+  }
+
+  worker-1 = {
+    role          = "worker"
+    instance_type = "m5.xlarge"
+    volume_size   = 100
+    subnet_type   = "private"
+  }
+  worker-2 = {
+    role          = "worker"
+    instance_type = "m5.xlarge"
+    volume_size   = 100
+    subnet_type   = "private"
+  }
+  worker-3 = {
+    role          = "worker"
+    instance_type = "m5.xlarge"
+    volume_size   = 100
+    subnet_type   = "private"
+  }
+
+  db = {
+    role          = "db"
+    instance_type = "m5.large"
+    volume_size   = 100
+    subnet_type   = "private"
+  }
+}
+
+# SSH -- paste your public key or use file()
+ssh_public_key = "ssh-ed25519 AAAA... your-key"
+# ssh_public_key = file("../../../../deployment.pub")
+
+# Networking
+vpc_cidr          = "10.0.0.0/16"
+allowed_ssh_cidrs = ["0.0.0.0/0"]   # restrict to your IP for production
+
+# DNS -- requires a Route53 hosted zone
+domain_name             = "example.com"
+application_subdomains  = ["app"]
+control_plane_subdomain = "k8scontroller"
+
+# S3 Buckets
+s3_buckets = {
+  data = {
+    cors_enabled      = false
+    manage_versioning = true
+    versioning_status = "Suspended"
+    lifecycle_enabled = false
+  }
+}
+
+s3_cors_configuration = {
+  allowed_headers = ["*"]
+  allowed_methods = ["GET", "PUT", "POST", "DELETE", "HEAD"]
+  allowed_origins = ["*"]
+  expose_headers  = ["ETag"]
+  max_age_seconds = 3600
+}
+
+# Tags -- applied to every resource
+tags = {
+  Owner       = "your-name"
+  Environment = "lab"
+  Team        = "your-team"
+}

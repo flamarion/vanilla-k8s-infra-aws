@@ -1,0 +1,42 @@
+---
+- name: Create local super-admin kubeconfig
+  ansible.builtin.shell: |
+    sed 's|server: https://.*:6443|server: https://127.0.0.1:6443|' \
+      /etc/kubernetes/super-admin.conf > /tmp/super-admin-local.conf
+    chown ubuntu:ubuntu /tmp/super-admin-local.conf
+    chmod 0600 /tmp/super-admin-local.conf
+  changed_when: false
+
+- name: Add metrics-server Helm repository
+  kubernetes.core.helm_repository:
+    name: metrics-server
+    repo_url: https://kubernetes-sigs.github.io/metrics-server/
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+
+- name: Install metrics-server
+  kubernetes.core.helm:
+    name: metrics-server
+    chart_ref: metrics-server/metrics-server
+    chart_version: "{{ metrics_server_chart_version | default(omit, true) }}"
+    release_namespace: kube-system
+    create_namespace: false
+    values:
+      defaultArgs:
+        - "--cert-dir=/tmp"
+        - "--kubelet-preferred-address-types=InternalIP"
+        - "--kubelet-use-node-status-port"
+        - "--metric-resolution=15s"
+        - "--secure-port=10250"
+      args:
+        - "--kubelet-insecure-tls"
+    wait: false
+  environment:
+    KUBECONFIG: /tmp/super-admin-local.conf
+  become: false
+
+- name: Clean up temp kubeconfig
+  ansible.builtin.file:
+    path: /tmp/super-admin-local.conf
+    state: absent

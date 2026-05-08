@@ -1,0 +1,55 @@
+---
+# ---------------------------------------------------------------------------
+# Global variables shared by all hosts
+# ---------------------------------------------------------------------------
+
+# SSH
+ansible_user: ubuntu
+ansible_ssh_private_key_file: "{{ lookup('env', 'SSH_KEY_PATH') | default('./deployment', true) }}"
+
+# Domain
+# Must match `domain_name` in terraform.tfvars. Used by kubeadm certSANs,
+# cert-manager ClusterIssuer email, and the control plane endpoint.
+domain_name: example.com
+
+# ---------------------------------------------------------------------------
+# Component versions
+# Pin every version here for reproducible deployments.
+# ---------------------------------------------------------------------------
+
+# Kubernetes
+k8s_version: "1.35"
+k8s_package_version: "1.35.*"
+control_plane_endpoint: "k8scontroller.{{ domain_name }}:6443"
+pod_network_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+
+# Container runtime
+containerd_package: "containerd.io"
+
+# Cilium CNI
+cilium_version: "1.17.3"
+gateway_api_version: "v1.2.1"
+
+# EBS CSI driver
+ebs_csi_chart_version: "2.56.1"
+
+# cert-manager
+cert_manager_chart_version: ""
+cert_manager_crds_url: "https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.crds.yaml"
+
+# Metrics server
+metrics_server_chart_version: ""
+
+# Helm (installed on controllers)
+helm_install_url: "https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
+
+# MySQL
+mysql_version: "8.0"
+
+# ---------------------------------------------------------------------------
+# Ports (must match Terraform)
+# ---------------------------------------------------------------------------
+ssh_port: 22
+k8s_api_port: 6443
+mysql_port: 3306

@@ -1,0 +1,42 @@
+---
+# ---------------------------------------------------------------------------
+# MySQL configuration
+#
+# By default, the role installs a vanilla MySQL 8.0 server, sets the root
+# password, and exposes it on the private network. It does NOT create any
+# databases or application users. To create them, populate `mysql_databases`
+# and `mysql_users` below (examples are commented out).
+#
+# To apply server tuning, populate `mysql_server_config` with key/value pairs
+# that will be written to /etc/mysql/mysql.conf.d/tuning.cnf and trigger a
+# MySQL restart. Leave it unset (or empty) to skip tuning.
+# ---------------------------------------------------------------------------
+
+mysql_root_password: "ChangeMeNow!"
+mysql_bind_address: "0.0.0.0"
+
+# Server tuning — optional. Anything you set here is rendered as `key = value`
+# under [mysqld] in /etc/mysql/mysql.conf.d/tuning.cnf.
+# Example:
+#   mysql_server_config:
+#     binlog_format: "ROW"
+#     innodb_flush_log_at_trx_commit: "1"
+#     max_connections: "500"
+mysql_server_config: {}
+
+# Databases — optional. Each entry creates a database with the given name.
+# Example:
+#   mysql_databases:
+#     - name: appdb
+#       encoding: utf8mb4
+#       collation: utf8mb4_general_ci
+mysql_databases: []
+
+# Users — optional. Each entry creates a user with the given grants.
+# Example:
+#   mysql_users:
+#     - name: appuser
+#       password: "ChangeMeNow!"
+#       host: "%"
+#       priv: "appdb.*:ALL"
+mysql_users: []

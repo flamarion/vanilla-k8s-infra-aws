@@ -1,0 +1,53 @@
+---
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Build /etc/hosts with all cluster nodes
+  ansible.builtin.template:
+    src: hosts.j2
+    dest: /etc/hosts
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Disable swap (runtime)
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Remove swap entries from fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '\sswap\s'
+    state: absent
+
+- name: Set timezone
+  community.general.timezone:
+    name: UTC
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - apt-transport-https
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - software-properties-common
+      - jq
+      - unzip
+      - python3-pip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install chrony for time sync
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+
+- name: Enable and start chrony
+  ansible.builtin.systemd:
+    name: chrony
+    enabled: true
+    state: started

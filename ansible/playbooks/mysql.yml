@@ -1,0 +1,16 @@
+---
+# =============================================================================
+# mysql.yml - MySQL-only deployment
+#
+# Usage: ansible-playbook playbooks/mysql.yml
+# =============================================================================
+
+- name: Common OS configuration
+  hosts: databases
+  roles:
+    - common
+
+- name: Configure MySQL database
+  hosts: databases
+  roles:
+    - mysql
